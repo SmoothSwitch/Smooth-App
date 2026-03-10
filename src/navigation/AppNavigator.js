@@ -2,8 +2,8 @@ import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import SplashScreen from '../features/onboarding/SplashScreen';
-import CreateAccountScreen from '../features/auth/CreateAccountScreen';
-import VerifyNumberScreen from '../features/auth/VerifyNumberScreen';
+import CreateAccountScreen from '../features/onboarding/CreateAccountScreen';
+import VerifyNumberScreen from '../features/onboarding/VerifyNumberScreen';
 
 const Stack = createNativeStackNavigator();
 
