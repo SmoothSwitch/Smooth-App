@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
+import Logo from '../../assets/images/logo.svg';
 
 /* ────────────── helpers ────────────── */
 
@@ -65,9 +66,7 @@ export default function CreateAccountScreen() {
           <Ionicons name="arrow-back" size={24} color="#1A1A2E" />
         </TouchableOpacity>
 
-        <View className="w-9 h-9 rounded-xl bg-[#2196F3] items-center justify-center">
-          <MaterialCommunityIcons name="swap-horizontal" size={18} color="#fff" />
-        </View>
+        <Logo width={32} height={32} />
         <Text
           className="text-xl text-[#2196F3]"
           style={{ fontFamily: 'Gilroy-Bold' }}

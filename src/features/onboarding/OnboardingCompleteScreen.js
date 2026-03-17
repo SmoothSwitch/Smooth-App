@@ -14,6 +14,7 @@ import {
 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
+import Logo from '../../assets/images/logo.svg';
 
 /* ────────────── component ────────────── */
 
@@ -30,22 +31,7 @@ export default function OnboardingCompleteScreen() {
       <View className="flex-row items-center justify-between px-5 pt-14 pb-2">
         {/* Logo + Name */}
         <View className="flex-row items-center gap-2">
-          <View
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              backgroundColor: '#2196F3',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <MaterialCommunityIcons
-              name="checkbox-marked-outline"
-              size={18}
-              color="#FFFFFF"
-            />
-          </View>
+          <Logo width={32} height={32} />
           <Text
             className="text-base text-[#1A1A2E]"
             style={{ fontFamily: 'Gilroy-Bold' }}

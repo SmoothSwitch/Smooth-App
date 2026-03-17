@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
+import Logo from '../../assets/images/logo.svg';
 
 const OTP_LENGTH = 6;
 const RESEND_SECONDS = 60;
@@ -139,9 +140,7 @@ export default function VerifyNumberScreen() {
         </TouchableOpacity>
 
         <View className="flex-row items-center gap-2">
-          <View className="w-8 h-8 rounded-lg bg-[#2196F3] items-center justify-center">
-            <MaterialCommunityIcons name="swap-horizontal" size={18} color="#fff" />
-          </View>
+          <Logo width={32} height={32} />
           <Text
             className="text-lg text-[#1A1A2E]"
             style={{ fontFamily: 'Gilroy-Bold' }}

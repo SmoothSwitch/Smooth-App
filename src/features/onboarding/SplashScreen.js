@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { MaterialCommunityIcons, Ionicons, Feather } from '@expo/vector-icons';
+import Logo from '../../assets/images/logo.svg';
 
 /**
  * SplashScreen – onboarding / landing screen.
@@ -24,9 +25,7 @@ export default function SplashScreen() {
       <View className="flex-row items-center justify-between px-5 pt-14 pb-4">
         {/* Logo + brand */}
         <View className="flex-row items-center gap-2">
-          <View className="w-8 h-8 rounded-lg bg-[#2196F3] items-center justify-center">
-            <MaterialCommunityIcons name="swap-horizontal" size={18} color="#fff" />
-          </View>
+          <Logo width={80} height={80} />
           <Text className="text-lg font-bold text-[#1A1A2E]">SmoothSwitch</Text>
         </View>
 
