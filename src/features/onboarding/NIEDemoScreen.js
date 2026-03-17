@@ -7,6 +7,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 
 /* ────────────── constants ────────────── */
 
@@ -20,6 +21,7 @@ const MAX_BAR_HEIGHT = 140; // tallest bar px
 /* ────────────── component ────────────── */
 
 export default function NIEDemoScreen() {
+  const navigation = useNavigation();
   const mtnBarHeight = (MTN_LATENCY / AIRTEL_LATENCY) * MAX_BAR_HEIGHT;
   const airtelBarHeight = MAX_BAR_HEIGHT;
 
@@ -232,6 +234,7 @@ export default function NIEDemoScreen() {
             shadowRadius: 8,
             elevation: 4,
           }}
+          onPress={() => navigation.navigate('WatchBothSIMs')}
         >
           <Text
             className="text-white text-base"

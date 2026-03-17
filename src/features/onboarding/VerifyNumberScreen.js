@@ -235,6 +235,7 @@ export default function VerifyNumberScreen() {
             otp.every((d) => d) ? 'bg-[#2196F3]' : 'bg-[#2196F3]/50'
           }`}
           disabled={!otp.every((d) => d)}
+          onPress={() => navigation.navigate('ScanningNetworks')}
         >
           <Text
             className="text-white text-base"

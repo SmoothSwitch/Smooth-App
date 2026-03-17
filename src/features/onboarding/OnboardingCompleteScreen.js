@@ -13,10 +13,12 @@ import {
   FontAwesome5,
 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation } from '@react-navigation/native';
 
 /* ────────────── component ────────────── */
 
 export default function OnboardingCompleteScreen() {
+  const navigation = useNavigation();
   return (
     <ScrollView
       className="flex-1 bg-white"
@@ -294,6 +296,7 @@ export default function OnboardingCompleteScreen() {
             shadowRadius: 8,
             elevation: 4,
           }}
+          onPress={() => navigation.navigate('Dashboard')}
         >
           <Text
             className="text-white text-base mr-2"
@@ -309,6 +312,7 @@ export default function OnboardingCompleteScreen() {
       <TouchableOpacity
         activeOpacity={0.6}
         className="items-center mt-4"
+        onPress={() => navigation.navigate('Dashboard')}
       >
         <Text
           className="text-sm text-[#6B7280]"

@@ -7,10 +7,12 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 
 /* ────────────── component ────────────── */
 
 export default function StayProtectedScreen() {
+  const navigation = useNavigation();
   return (
     <ScrollView
       className="flex-1 bg-white"
@@ -253,6 +255,7 @@ export default function StayProtectedScreen() {
             shadowRadius: 8,
             elevation: 4,
           }}
+          onPress={() => navigation.navigate('OnboardingComplete')}
         >
           <Text
             className="text-white text-base"
@@ -268,6 +271,7 @@ export default function StayProtectedScreen() {
       <TouchableOpacity
         activeOpacity={0.6}
         className="items-center mt-4 pb-8"
+        onPress={() => navigation.navigate('OnboardingComplete')}
       >
         <Text
           className="text-sm text-[#6B7280]"

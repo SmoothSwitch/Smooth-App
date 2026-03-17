@@ -8,6 +8,7 @@ import {
   StatusBar,
 } from 'react-native';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 
 /* ────────────── helpers ────────────── */
 
@@ -42,6 +43,7 @@ const BAR_COLOR_INACTIVE = '#E5E7EB';
 /* ────────────── component ────────────── */
 
 export default function CreateAccountScreen() {
+  const navigation = useNavigation();
   const [emailOrPhone, setEmailOrPhone] = useState('');
   const [password, setPassword] = useState('');
   const [secureEntry, setSecureEntry] = useState(true);
@@ -227,6 +229,7 @@ export default function CreateAccountScreen() {
         <TouchableOpacity
           activeOpacity={0.85}
           className="bg-[#2196F3] rounded-xl py-4 items-center shadow-lg shadow-blue-300"
+          onPress={() => navigation.navigate('VerifyNumber')}
         >
           <Text
             className="text-white text-base"

@@ -7,6 +7,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 
 /* ────────────── Signal Bar component ────────────── */
 
@@ -41,6 +42,7 @@ function SignalBars({ filled, total, filledColor, emptyColor }) {
 /* ────────────── component ────────────── */
 
 export default function WatchBothSIMsScreen() {
+  const navigation = useNavigation();
   return (
     <ScrollView
       className="flex-1 bg-[#F4F6FB]"
@@ -283,6 +285,7 @@ export default function WatchBothSIMsScreen() {
             shadowRadius: 8,
             elevation: 4,
           }}
+          onPress={() => navigation.navigate('EnableSmartMode')}
         >
           <Text
             className="text-white text-base"
@@ -298,6 +301,7 @@ export default function WatchBothSIMsScreen() {
       <TouchableOpacity
         activeOpacity={0.6}
         className="items-center mt-4 pb-8"
+        onPress={() => navigation.navigate('EnableSmartMode')}
       >
         <Text
           className="text-sm text-[#6B7280]"

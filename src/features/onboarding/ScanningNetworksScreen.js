@@ -8,6 +8,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 
 /* ────────────── SIM data ────────────── */
 
@@ -41,6 +42,7 @@ const DETECTED_SIMS = [
 /* ────────────── component ────────────── */
 
 export default function ScanningNetworksScreen() {
+  const navigation = useNavigation();
   /* Pulsing ring animation */
   const pulse1 = useRef(new Animated.Value(0.6)).current;
   const pulse2 = useRef(new Animated.Value(0.4)).current;
@@ -299,6 +301,7 @@ export default function ScanningNetworksScreen() {
             shadowRadius: 8,
             elevation: 4,
           }}
+          onPress={() => navigation.navigate('NIEDemo')}
         >
           <Text
             className="text-white text-base"
