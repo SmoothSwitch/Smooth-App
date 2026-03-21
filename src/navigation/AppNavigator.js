@@ -10,13 +10,14 @@ import NIEDemoScreen from '../features/onboarding/NIEDemoScreen'
 import WatchBothSIMsScreen from '../features/onboarding/WatchBothSIMsScreen'
 import EnableSmartModeScreen from '../features/onboarding/EnableSmartModeScreen'
 import StayProtectedScreen from '../features/onboarding/StayProtectedScreen'
+import NIELiveQualityScreen from '../features/network/NIELiveQualityScreen'
 
 const Stack = createNativeStackNavigator()
 
 export default function AppNavigator() {
   return (
     <Stack.Navigator
-      initialRouteName='ScanningNetworks'
+      initialRouteName='Splash'
       screenOptions={{ headerShown: false }}
     >
       <Stack.Screen name='Splash' component={SplashScreen} />
@@ -34,6 +35,7 @@ export default function AppNavigator() {
         name='OnboardingComplete'
         component={OnboardingCompleteScreen}
       />
+      <Stack.Screen name='NIELiveQuality' component={NIELiveQualityScreen} />
     </Stack.Navigator>
   )
 }
