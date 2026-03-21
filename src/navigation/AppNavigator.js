@@ -16,7 +16,7 @@ const Stack = createNativeStackNavigator()
 export default function AppNavigator() {
   return (
     <Stack.Navigator
-      initialRouteName='Splash'
+      initialRouteName='ScanningNetworks'
       screenOptions={{ headerShown: false }}
     >
       <Stack.Screen name='Splash' component={SplashScreen} />

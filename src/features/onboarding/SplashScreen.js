@@ -26,7 +26,6 @@ export default function SplashScreen() {
         {/* Logo + brand */}
         <View className="flex-row items-center gap-2">
           <Logo width={80} height={80} />
-          <Text className="text-lg font-bold text-[#1A1A2E]">SmoothSwitch</Text>
         </View>
 
         {/* Get Started pill */}

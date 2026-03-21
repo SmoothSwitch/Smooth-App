@@ -29,16 +29,8 @@ export default function OnboardingCompleteScreen() {
 
       {/* ──────── HEADER ──────── */}
       <View className="flex-row items-center justify-between px-5 pt-14 pb-2">
-        {/* Logo + Name */}
-        <View className="flex-row items-center gap-2">
-          <Logo width={32} height={32} />
-          <Text
-            className="text-base text-[#1A1A2E]"
-            style={{ fontFamily: 'Gilroy-Bold' }}
-          >
-            SmoothSwitch
-          </Text>
-        </View>
+        {/* Logo */}
+        <Logo width={48} height={48} />
 
         {/* Verified Badge */}
         <View

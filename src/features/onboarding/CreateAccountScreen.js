@@ -65,14 +65,11 @@ export default function CreateAccountScreen() {
         <TouchableOpacity activeOpacity={0.6} className="mr-2">
           <Ionicons name="arrow-back" size={24} color="#1A1A2E" />
         </TouchableOpacity>
+      </View>
 
-        <Logo width={32} height={32} />
-        <Text
-          className="text-xl text-[#2196F3]"
-          style={{ fontFamily: 'Gilroy-Bold' }}
-        >
-          SmoothSwitch
-        </Text>
+      {/* ──────── LOGO ──────── */}
+      <View style={{ alignItems: 'center' }}>
+        <Logo width={80} height={80} />
       </View>
 
       {/* ──────── TITLE ──────── */}
