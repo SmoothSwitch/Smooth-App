@@ -13,6 +13,7 @@ import AreaAdvisoryMapScreen    from '../features/dashboard/AreaAdvisoryMapScree
 import AreaAnalysisScreen       from '../features/dashboard/AreaAnalysisScreen';
 import SettingsHomeScreen       from '../features/dashboard/SettingsHomeScreen';
 import AccountProfileScreen     from '../features/dashboard/AccountProfileScreen';
+import PrivacyDataScreen        from '../features/dashboard/PrivacyDataScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -34,6 +35,7 @@ export default function AppNavigator() {
         <Stack.Screen name="AreaAnalysis"        component={AreaAnalysisScreen}        />
         <Stack.Screen name="SettingsHome"         component={SettingsHomeScreen}         />
         <Stack.Screen name="AccountProfile"       component={AccountProfileScreen}       />
+        <Stack.Screen name="PrivacyData"           component={PrivacyDataScreen}           />
       </Stack.Navigator>
     </NavigationContainer>
   );
