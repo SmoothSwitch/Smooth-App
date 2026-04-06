@@ -13,7 +13,11 @@ import AreaAdvisoryMapScreen    from '../features/dashboard/AreaAdvisoryMapScree
 import AreaAnalysisScreen       from '../features/dashboard/AreaAnalysisScreen';
 import SettingsHomeScreen       from '../features/dashboard/SettingsHomeScreen';
 import AccountProfileScreen     from '../features/dashboard/AccountProfileScreen';
-import PrivacyDataScreen        from '../features/dashboard/PrivacyDataScreen';
+import PrivacyDataScreen             from '../features/dashboard/PrivacyDataScreen';
+import NotificationPreferenceScreen  from '../features/dashboard/NotificationPreferenceScreen';
+import AppearanceScreen              from '../features/dashboard/AppearanceScreen';
+import NotificationsScreen           from '../features/dashboard/NotificationsScreen';
+import SettingsScreen                from '../features/dashboard/SettingsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -35,7 +39,11 @@ export default function AppNavigator() {
         <Stack.Screen name="AreaAnalysis"        component={AreaAnalysisScreen}        />
         <Stack.Screen name="SettingsHome"         component={SettingsHomeScreen}         />
         <Stack.Screen name="AccountProfile"       component={AccountProfileScreen}       />
-        <Stack.Screen name="PrivacyData"           component={PrivacyDataScreen}           />
+        <Stack.Screen name="PrivacyData"              component={PrivacyDataScreen}              />
+        <Stack.Screen name="NotificationPreference"  component={NotificationPreferenceScreen}  />
+        <Stack.Screen name="Appearance"               component={AppearanceScreen}               />
+        <Stack.Screen name="Notifications"             component={NotificationsScreen}            />
+        <Stack.Screen name="SettingsMain"               component={SettingsScreen}                 />
       </Stack.Navigator>
     </NavigationContainer>
   );
