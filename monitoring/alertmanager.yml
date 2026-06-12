@@ -11,5 +11,5 @@ route:
 receivers:
   - name: datadog-webhook
     webhook_configs:
-      - url: 'https://api.datadoghq.eu/api/v1/integration/prometheus?api_key=57d0cde73ed0a49ee0fa3994f19723da'
+      - url: 'https://api.${DD_SITE:-datadoghq.eu}/api/v1/integration/prometheus?api_key=${DD_API_KEY}'
         send_resolved: true
