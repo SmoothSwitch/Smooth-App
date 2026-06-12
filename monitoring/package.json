@@ -1,0 +1,16 @@
+{
+  "name": "smoothswitch-capacity-report",
+  "version": "1.0.0",
+  "description": "Weekly capacity report script for SmoothSwitch — queries Prometheus and delivers via webhook",
+  "main": "capacity-report.js",
+  "scripts": {
+    "report": "node capacity-report.js",
+    "test": "PROMETHEUS_URL=http://localhost:9090 node capacity-report.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: datadog-webhook
+
+receivers:
+  - name: datadog-webhook
+    webhook_configs:
+      - url: 'https://api.datadoghq.eu/api/v1/integration/prometheus?api_key=57d0cde73ed0a49ee0fa3994f19723da'
+        send_resolved: true

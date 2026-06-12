@@ -1,0 +1,137 @@
+# =============================================================================
+# Prometheus Alert Rules – SmoothSwitch
+# =============================================================================
+
+groups:
+  # ─────────────────── Critical Alerts ───────────────────
+  - name: smoothswitch_critical
+    rules:
+      # API Error Rate > 5% for 5 minutes
+      - alert: APIErrorRateHigh
+        expr: >
+          (
+            sum(rate(http_requests_total{code=~"5.."}[5m])) by (job)
+            /
+            sum(rate(http_requests_total[5m])) by (job)
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          team: smoothswitch
+        annotations:
+          summary: "High API error rate on {{ $labels.job }}"
+          description: "{{ $labels.job }} has a 5xx error rate of {{ $value | printf \"%.1f\" }}% (threshold: 5%)."
+          runbook_url: "https://wiki.smoothswitch.io/runbooks/api-error-rate"
+
+      # Auth Service is completely down
+      - alert: AuthServiceDown
+        expr: up{job="auth-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: smoothswitch
+        annotations:
+          summary: "Auth Service is DOWN"
+          description: "auth-service has been unreachable for more than 2 minutes."
+          runbook_url: "https://wiki.smoothswitch.io/runbooks/auth-service-down"
+
+      # MNO Pool critically low (< 5 available SIMs for any MNO)
+      - alert: MNOPoolCritical
+        expr: mno_pool_available_sims < 5
+        for: 1m
+        labels:
+          severity: critical
+          team: smoothswitch
+        annotations:
+          summary: "MNO pool critically low for {{ $labels.mno }}"
+          description: "{{ $labels.mno }} has only {{ $value }} SIMs remaining (threshold: 5)."
+          runbook_url: "https://wiki.smoothswitch.io/runbooks/mno-pool-critical"
+
+      # Wallet Service is completely down
+      - alert: WalletServiceDown
+        expr: up{job="wallet-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: smoothswitch
+        annotations:
+          summary: "Wallet Service is DOWN"
+          description: "wallet-service has been unreachable for more than 2 minutes."
+
+      # NIE Engine is completely down
+      - alert: NIEEngineDown
+        expr: up{job="nie-engine"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: smoothswitch
+        annotations:
+          summary: "NIE Engine is DOWN"
+          description: "nie-engine has been unreachable for more than 2 minutes."
+
+  # ─────────────────── Warning Alerts ───────────────────
+  - name: smoothswitch_warnings
+    rules:
+      # p99 latency > 2 seconds for 10 minutes
+      - alert: HighLatency
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (job, le)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          team: smoothswitch
+        annotations:
+          summary: "High p99 latency on {{ $labels.job }}"
+          description: "{{ $labels.job }} p99 latency is {{ $value | printf \"%.2f\" }}s (threshold: 2s)."
+
+      # MNO Pool getting low (< 20 available SIMs)
+      - alert: MNOPoolLow
+        expr: mno_pool_available_sims < 20
+        for: 5m
+        labels:
+          severity: warning
+          team: smoothswitch
+        annotations:
+          summary: "MNO pool low for {{ $labels.mno }}"
+          description: "{{ $labels.mno }} has {{ $value }} SIMs remaining (threshold: 20)."
+
+      # Kafka consumer lag > 1000 for 10 minutes
+      - alert: KafkaConsumerLag
+        expr: kafka_consumer_group_lag > 1000
+        for: 10m
+        labels:
+          severity: warning
+          team: smoothswitch
+        annotations:
+          summary: "Kafka consumer lag is high"
+          description: "Consumer group {{ $labels.group }} on topic {{ $labels.topic }} has a lag of {{ $value }}."
+
+      # High memory usage (> 80%)
+      - alert: HighMemoryUsage
+        expr: >
+          (process_resident_memory_bytes / 1024 / 1024) > 800
+        for: 10m
+        labels:
+          severity: warning
+          team: smoothswitch
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "{{ $labels.job }} is using {{ $value | printf \"%.0f\" }}MB of memory."
+
+      # Network switch failure rate > 10%
+      - alert: NetworkSwitchFailureRate
+        expr: >
+          (
+            sum(rate(network_switches_total{status="failed"}[5m]))
+            /
+            sum(rate(network_switches_total[5m]))
+          ) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: smoothswitch
+        annotations:
+          summary: "Network switch failure rate is high"
+          description: "{{ $value | printf \"%.1f\" }}% of network switches are failing (threshold: 10%)."

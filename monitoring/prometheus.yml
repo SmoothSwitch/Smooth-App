@@ -1,0 +1,66 @@
+# =============================================================================
+# Prometheus Scrape Configuration – SmoothSwitch
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert-rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # ──────────── Prometheus self-monitoring ────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ──────────── Auth Service (Kosi – Track A) ────────────
+  - job_name: "auth-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["auth-service:8081"]
+        labels:
+          service: "auth-service"
+          team: "track-a"
+
+  # ──────────── Wallet Service (Kosi – Track A) ────────────
+  - job_name: "wallet-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["wallet-service:8082"]
+        labels:
+          service: "wallet-service"
+          team: "track-a"
+
+  # ──────────── NIE Engine (Go) ────────────
+  - job_name: "nie-engine"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["nie-engine:8083"]
+        labels:
+          service: "nie-engine"
+          team: "track-b"
+
+  # ──────────── Relay Proxy (Go / QUIC) ────────────
+  - job_name: "relay-proxy"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["relay-proxy:8084"]
+        labels:
+          service: "relay-proxy"
+          team: "track-b"
+
+  # ──────────── MNO Integration (Python / FastAPI) ────────────
+  - job_name: "mno-integration"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["mno-integration:8085"]
+        labels:
+          service: "mno-integration"
+          team: "track-a"

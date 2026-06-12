@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SmoothSwitch – CloudFront CDN distribution with WAF WebACL.
+  Shields the API Gateway with Origin Shield (eu-west-1), strict
+  caching rules, and managed WAF rule sets.
+
+# =============================================================================
+# Parameters
+# =============================================================================
+Parameters:
+  APIGatewayOriginDomain:
+    Type: String
+    Description: "The domain of the API Gateway origin (e.g. abc123.execute-api.eu-west-1.amazonaws.com)"
+    Default: "PLACEHOLDER-api-gateway.execute-api.eu-west-1.amazonaws.com"
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging]
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # ─────────────── WAF WebACL ───────────────
+  SmoothSwitchWAF:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "smoothswitch-waf-${Environment}"
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      Description: "WAF for SmoothSwitch API – blocks SQLi, XSS, and rate-limits abusive IPs"
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "smoothswitch-waf-${Environment}"
+
+      Rules:
+        # ── AWS Managed: Common Rule Set (XSS, bad bots, etc.) ──
+        - Name: AWSCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: "AWSCommonRuleSet"
+
+        # ── AWS Managed: SQLi Rule Set ──
+        - Name: AWSSQLiRuleSet
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: "AWSSQLiRuleSet"
+
+        # ── AWS Managed: Known Bad Inputs ──
+        - Name: AWSKnownBadInputs
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: "AWSKnownBadInputs"
+
+        # ── IP Rate-Based Rule (2000 requests per 5 min) ──
+        - Name: RateLimitRule
+          Priority: 4
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: "RateLimitRule"
+
+  # ─────────────── CloudFront Distribution ───────────────
+  SmoothSwitchDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "SmoothSwitch API CDN – ${Environment}"
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        WebACLId: !GetAtt SmoothSwitchWAF.Arn
+
+        Origins:
+          - DomainName: !Ref APIGatewayOriginDomain
+            Id: APIGatewayOrigin
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: eu-west-1
+
+        DefaultCacheBehavior:
+          TargetOriginId: APIGatewayOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Default: no caching (0s TTL) for API responses
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 0
+          ForwardedValues:
+            QueryString: true
+            Headers:
+              - Authorization
+              - X-Correlation-ID
+              - Content-Type
+            Cookies:
+              Forward: none
+
+        CacheBehaviors:
+          # ── /health endpoint: cache for 30 seconds ──
+          - PathPattern: "/health"
+            TargetOriginId: APIGatewayOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            DefaultTTL: 30
+            MinTTL: 10
+            MaxTTL: 60
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: none
+
+          # ── /auth/* : no caching (sensitive) ──
+          - PathPattern: "/auth/*"
+            TargetOriginId: APIGatewayOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            DefaultTTL: 0
+            MinTTL: 0
+            MaxTTL: 0
+            ForwardedValues:
+              QueryString: true
+              Headers: ["*"]
+              Cookies:
+                Forward: all
+
+          # ── /wallet/* : no caching (sensitive) ──
+          - PathPattern: "/wallet/*"
+            TargetOriginId: APIGatewayOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            DefaultTTL: 0
+            MinTTL: 0
+            MaxTTL: 0
+            ForwardedValues:
+              QueryString: true
+              Headers: ["*"]
+              Cookies:
+                Forward: all
+
+          # ── /payments/* : no caching (sensitive) ──
+          - PathPattern: "/payments/*"
+            TargetOriginId: APIGatewayOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            DefaultTTL: 0
+            MinTTL: 0
+            MaxTTL: 0
+            ForwardedValues:
+              QueryString: true
+              Headers: ["*"]
+              Cookies:
+                Forward: all
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  CloudFrontDomainName:
+    Description: "CloudFront distribution domain name"
+    Value: !GetAtt SmoothSwitchDistribution.DomainName
+
+  CloudFrontDistributionId:
+    Description: "CloudFront distribution ID"
+    Value: !Ref SmoothSwitchDistribution
+
+  WAFWebACLArn:
+    Description: "WAF WebACL ARN"
+    Value: !GetAtt SmoothSwitchWAF.Arn

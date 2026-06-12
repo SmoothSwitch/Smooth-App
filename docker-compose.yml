@@ -1,0 +1,100 @@
+###############################################################################
+# SmoothSwitch – Monitoring & Observability Stack
+# Deliverables: D1 (Prometheus + Grafana), D3 (Jaeger)
+###############################################################################
+
+services:
+  # ─────────────────────────── Prometheus ───────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: smoothswitch-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Alertmanager ─────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: smoothswitch-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Grafana ─────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: smoothswitch-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=smoothswitch2026
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Jaeger (D3) ─────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: smoothswitch-jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Datadog Agent ───────────────────────
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    container_name: smoothswitch-datadog-agent
+    restart: unless-stopped
+    environment:
+      - DD_API_KEY=57d0cde73ed0a49ee0fa3994f19723da
+      - DD_SITE=datadoghq.eu
+      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
+      - DD_APM_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+    ports:
+      - "8125:8125/udp" # StatsD
+      - "8126:8126/tcp" # APM Traces
+    networks:
+      - monitoring
+
+# ─────────────────────────── Volumes ───────────────────────────────
+volumes:
+  prometheus_data:
+  grafana_data:
+
+# ─────────────────────────── Networks ──────────────────────────────
+networks:
+  monitoring:
+    driver: bridge

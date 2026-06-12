@@ -1,0 +1,14 @@
+# Auto-provision dashboard JSON files from /var/lib/grafana/dashboards
+apiVersion: 1
+
+providers:
+  - name: "SmoothSwitch Dashboards"
+    orgId: 1
+    folder: "SmoothSwitch"
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
