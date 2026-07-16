@@ -69,6 +69,113 @@ services:
     networks:
       - monitoring
 
+  # ─────────────────────────── PostgreSQL ─────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: smoothswitch-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-smoothswitch}
+      - POSTGRES_USER=${DB_USER:-smoothswitch}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-smoothswitch_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Redis ─────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: smoothswitch-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Auth Service (Go + Gin) ───────────
+  auth-service:
+    build:
+      context: ./backend/auth-service
+      dockerfile: Dockerfile
+    container_name: smoothswitch-auth-service
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - GIN_MODE=release
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-smoothswitch}
+      - DB_USER=${DB_USER:-smoothswitch}
+      - DB_PASSWORD=${DB_PASSWORD:-smoothswitch_secret}
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-change-me-refresh-in-production}
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - monitoring
+
+  # ─────────────────────────── SIM Service (Go + gRPC) ───────────
+  sim-service:
+    build:
+      context: ./backend/sim-service
+      dockerfile: Dockerfile
+    container_name: smoothswitch-sim-service
+    restart: unless-stopped
+    ports:
+      - "50051:50051"
+    environment:
+      - PORT=50051
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Location Advisory (Go + Gin) ────
+  location-advisory:
+    build:
+      context: ./backend/location-advisory
+      dockerfile: Dockerfile
+    container_name: smoothswitch-location-advisory
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - GIN_MODE=release
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - redis
+    networks:
+      - monitoring
+
+  # ─────────────────────────── MNO Integration (Go + Gin) ────
+  mno-integration:
+    build:
+      context: ./backend/mno-integration
+      dockerfile: Dockerfile
+    container_name: smoothswitch-mno-integration
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - GIN_MODE=release
+      - MTN_API_URL=https://api.mtn.ng
+      - GLO_API_URL=https://api.gloworld.com
+      - AIRTEL_API_URL=https://api.airtel.com.ng
+      - NINEMOBILE_API_URL=https://api.9mobile.com.ng
+    networks:
+      - monitoring
+
   # ─────────────────────────── Datadog Agent ───────────────────────
   datadog-agent:
     image: gcr.io/datadoghq/agent:7
@@ -93,6 +200,8 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+  postgres_data:
+  redis_data:
 
 # ─────────────────────────── Networks ──────────────────────────────
 networks:

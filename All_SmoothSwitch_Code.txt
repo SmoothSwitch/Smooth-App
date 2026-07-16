@@ -1,0 +1,1702 @@
+================================================================================
+SMOOTHSWITCH TRACK A - COMPLETE CODEBASE FOR REVIEW
+================================================================================
+
+
+================================================================================
+FILE: backend\location-advisory\api\routes.py
+================================================================================
+
+from fastapi import FastAPI, HTTPException, Query
+import redis
+import os
+from typing import Dict
+
+from core.h3_mapper import get_h3_hex, is_valid_coordinate
+
+app = FastAPI(
+    title="SmoothSwitch Location Advisory API",
+    description="Provides privacy-first network quality recommendations based on H3 Hex grids."
+)
+
+# In production this would come from env vars
+redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=6379, db=0)
+
+CARRIERS = ["MTN", "GLO", "AIRTEL", "9MOBILE"]
+
+@app.get("/v1/advisory/quality")
+async def get_advisory_quality(
+    lat: float = Query(..., description="Latitude"),
+    lng: float = Query(..., description="Longitude")
+) -> Dict[str, any]:
+    """
+    Returns the recommended carrier for a given GPS coordinate.
+    Raw GPS coordinates are immediately discarded after being mapped to a ~500m H3 hex.
+    """
+    if not is_valid_coordinate(lat, lng):
+        raise HTTPException(status_code=400, detail="Invalid GPS coordinates")
+
+    # Privacy enforcement: Convert exact GPS to generalized hex grid index
+    hex_index = get_h3_hex(lat, lng)
+    
+    scores = {}
+    for carrier in CARRIERS:
+        key = f"advisory:h3:{hex_index}:{carrier}"
+        raw_score = redis_client.get(key)
+        
+        if raw_score:
+            scores[carrier] = round(float(raw_score), 2)
+        else:
+            # Fallback if no data collected in this region yet
+            scores[carrier] = 50.0 
+            
+    # Determine the recommended carrier (highest score)
+    best_carrier = max(scores, key=scores.get)
+    
+    return {
+        "location_grid": hex_index, # We return the grid ID, NOT the lat/lng
+        "resolution": "9 (~500m)",
+        "recommendation": best_carrier,
+        "grid_scores": scores
+    }
+
+
+
+================================================================================
+FILE: backend\location-advisory\core\h3_mapper.py
+================================================================================
+
+import h3
+
+# Constants defined by LLD
+H3_RESOLUTION = 9  # Approx 500m radius
+
+def get_h3_hex(lat: float, lng: float) -> str:
+    """
+    Converts a raw GPS coordinate into an H3 hexagonal grid index.
+    
+    This abstracts away exact user location into a ~500m hex tile,
+    ensuring compliance with our zero-raw-GPS privacy policy.
+    
+    Args:
+        lat: Latitude of the device
+        lng: Longitude of the device
+        
+    Returns:
+        The string representation of the H3 index (e.g., '89283082a0fffff')
+    """
+    # h3.geo_to_h3 is used in h3-py v3.7.x
+    return h3.geo_to_h3(lat, lng, H3_RESOLUTION)
+
+def is_valid_coordinate(lat: float, lng: float) -> bool:
+    """Validates real-world bounds"""
+    return -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0
+
+
+
+================================================================================
+FILE: backend\location-advisory\streaming\consumer.py
+================================================================================
+
+import json
+import logging
+import redis
+from confluent_kafka import Consumer, KafkaError
+
+logger = logging.getLogger(__name__)
+
+class SwitchEventConsumer:
+    """
+    Kafka consumer that listens to NIE switch events on 'network.switch.events'.
+    It extracts the historical signal strength logged during the switch
+    and aggregates it into the appropriate H3 grid cell in Redis.
+    """
+    
+    def __init__(self, kafka_config: dict, redis_client: redis.Redis):
+        self.consumer = Consumer(kafka_config)
+        self.redis = redis_client
+        self.topic = "network.switch.events"
+        
+    def start(self):
+        self.consumer.subscribe([self.topic])
+        logger.info(f"Subscribed to {self.topic}")
+        
+        try:
+            while True:
+                msg = self.consumer.poll(1.0)
+                
+                if msg is None:
+                    continue
+                if msg.error():
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    else:
+                        logger.error(f"Kafka error: {msg.error()}")
+                        break
+
+                self._process_message(msg.value())
+                
+        except KeyboardInterrupt:
+            logger.info("Kafka consumer shutting down...")
+        finally:
+            self.consumer.close()
+
+    def _process_message(self, message_bytes: bytes):
+        try:
+            data = json.loads(message_bytes.decode('utf-8'))
+            
+            # Extract H3 location if the NIE attached it, or calculate if GPS included
+            # In LLD, NIE optionally provides grid data directly via client SDK payload
+            h3_index = data.get("h3_index")
+            if not h3_index:
+                return # Can't aggregate without location
+                
+            scores = json.loads(data.get("quality_scores_json", "{}"))
+            
+            # Update EMA (Exponential Moving Average) in Redis for this hex
+            for carrier, score in scores.items():
+                self._update_ema(h3_index, carrier, float(score))
+                
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+
+    def _update_ema(self, h3_index: str, carrier: str, new_score: float):
+        """
+        Calculates an Exponential Moving Average for the grid cell to keep the
+        advisory score smooth and resistant to single-device anomalies.
+        """
+        key = f"advisory:h3:{h3_index}:{carrier}"
+        alpha = 0.2
+        
+        current = self.redis.get(key)
+        if current is None:
+            self.redis.set(key, new_score, ex=86400 * 7) # 7 day TTL
+        else:
+            ema = (new_score * alpha) + (float(current) * (1 - alpha))
+            self.redis.set(key, ema, ex=86400 * 7)
+
+
+
+================================================================================
+FILE: backend\location-advisory\tests\test_mapper.py
+================================================================================
+
+import unittest
+from core.h3_mapper import get_h3_hex, is_valid_coordinate
+
+class TestH3Mapper(unittest.TestCase):
+    def test_valid_coordinates(self):
+        self.assertTrue(is_valid_coordinate(6.5244, 3.3792)) # Lagos
+        self.assertFalse(is_valid_coordinate(91.0, 0.0))    # Invalid Lat
+        self.assertFalse(is_valid_coordinate(0.0, 181.0))   # Invalid Lng
+        
+    def test_h3_conversion(self):
+        # Using a known coordinate (Lagos, Nigeria)
+        lat, lng = 6.5244, 3.3792
+        hex_index = get_h3_hex(lat, lng)
+        
+        # H3 indices are string representations of 64-bit integers
+        self.assertIsInstance(hex_index, str)
+        self.assertTrue(len(hex_index) > 10)
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+
+================================================================================
+FILE: backend\mno-integration\adapters\base.py
+================================================================================
+
+from abc import ABC, abstractmethod
+from typing import Dict, Any
+
+class MNOAdapter(ABC):
+    """
+    Abstract base class for all Mobile Network Operator adapters.
+    Ensures a consistent interface for the orchestrator to interact with different carriers.
+    """
+
+    def __init__(self, carrier_name: str):
+        self.carrier_name = carrier_name
+
+    @abstractmethod
+    def deduct_balance(self, imsi: str, amount_mb: float) -> Dict[str, Any]:
+        """
+        Deduct the specified data amount from the user's pool on the MNO's system.
+        
+        Args:
+            imsi (str): The subscriber identity.
+            amount_mb (float): The amount of data in MB to deduct.
+            
+        Returns:
+            Dict containing the transaction status and remaining balance.
+        """
+        pass
+
+    @abstractmethod
+    def fallback_sftp_batch(self, imsi: str, amount_mb: float) -> bool:
+        """
+        Write the deduction to a local CSV buffer to be uploaded via SFTP
+        if the MNO's REST API is down.
+        """
+        pass
+
+
+
+================================================================================
+FILE: backend\mno-integration\adapters\fallback.py
+================================================================================
+
+import os
+import csv
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+class SFTPFallbackManager:
+    """
+    Manages writing offline deductions to a CSV cache.
+    A separate cron job will use Paramiko to upload these to the MNO's SFTP server
+    when the REST API outage exceeds 5 minutes.
+    """
+    
+    def __init__(self, carrier_name: str, cache_dir: str = "/tmp/smoothswitch/sftp"):
+        self.carrier_name = carrier_name
+        self.cache_dir = cache_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        # Format: MTN_fallback_20231024.csv
+        self.current_file = os.path.join(
+            self.cache_dir, 
+            f"{self.carrier_name}_fallback_{datetime.now().strftime('%Y%m%d')}.csv"
+        )
+        self._ensure_header()
+
+    def _ensure_header(self):
+        if not os.path.exists(self.current_file):
+            with open(self.current_file, mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["timestamp", "imsi", "deduction_mb", "status"])
+
+    def append_record(self, imsi: str, amount_mb: float) -> bool:
+        try:
+            with open(self.current_file, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    datetime.utcnow().isoformat(),
+                    imsi,
+                    amount_mb,
+                    "PENDING_SFTP"
+                ])
+            logger.info(f"[{self.carrier_name}] Fallback record written for IMSI {imsi}")
+            return True
+        except Exception as e:
+            logger.error(f"[{self.carrier_name}] Failed to write SFTP fallback: {e}")
+            return False
+
+
+
+================================================================================
+FILE: backend\mno-integration\adapters\mtn.py
+================================================================================
+
+import logging
+import requests
+from typing import Dict, Any
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type, before_sleep_log
+
+from .base import MNOAdapter
+from .fallback import SFTPFallbackManager
+
+logger = logging.getLogger(__name__)
+
+# This mock exception simulates what would be thrown by the Tenacity CircuitBreaker
+# when the 3-failure threshold inside 30 seconds is reached.
+class CircuitBreakerOpenError(Exception):
+    pass
+
+class MTNAdapter(MNOAdapter):
+    """
+    Adapter for MTN Nigeria's mobile data deduction REST API.
+    Implements a strict circuit breaker and fallback SFTP queue.
+    """
+    
+    def __init__(self, api_base_url: str):
+        super().__init__("MTN")
+        self.api_base_url = api_base_url
+        self.fallback_manager = SFTPFallbackManager("MTN")
+
+    # Retry logic: Try up to 3 times with 1-second waits on ConnectionError or Timeout
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(1),
+        retry=retry_if_exception_type((requests.exceptions.ConnectionError, requests.exceptions.Timeout)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True
+    )
+    def _execute_rest_call(self, imsi: str, amount_mb: float) -> requests.Response:
+        """Isolated REST call to allow Tenacity to cleanly trap retries/failures."""
+        payload = {
+            "imsi": imsi,
+            "deduct_amount": amount_mb,
+            "unit": "MB"
+        }
+        
+        # Simulate an actual POST to MTN's charging gateway
+        # In this mock, we force a connect error to demonstrate the breaker
+        raise requests.exceptions.ConnectionError("MTN API Gateway unreachable")
+        
+        # response = requests.post(f"{self.api_base_url}/v1/charging/deduct", json=payload, timeout=2.0)
+        # response.raise_for_status()
+        # return response
+
+    def deduct_balance(self, imsi: str, amount_mb: float) -> Dict[str, Any]:
+        try:
+            # Attempt to hit the primary REST API
+            response = self._execute_rest_call(imsi, amount_mb)
+            
+            # If successful, parse result
+            data = response.json()
+            return {
+                "status": "SUCCESS",
+                "remaining_balance": data.get("balance"),
+                "source": "REST_API"
+            }
+            
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            # Circuit breaker flipped open (simulated by Tenacity giving up after 3 tries)
+            logger.error(f"[MTN] Circuit Breaker OPEN after 3 failures. Engaging SFTP Fallback.")
+            
+            return self.fallback_sftp_batch(imsi, amount_mb)
+        except Exception as e:
+            logger.error(f"[MTN] Unhandled exception during deduction: {e}")
+            return {"status": "ERROR", "message": str(e)}
+
+    def fallback_sftp_batch(self, imsi: str, amount_mb: float) -> Dict[str, Any]:
+        """
+        Engages the fallback mechanism, storing the deduction for later batch processing.
+        """
+        success = self.fallback_manager.append_record(imsi, amount_mb)
+        if success:
+            return {
+                "status": "QUEUED_SFTP",
+                "message": "Deduction logged to offline batch file for later sync.",
+                "source": "SFTP_FALLBACK"
+            }
+        return {"status": "ERROR", "message": "SFTP Fallback also failed."}
+
+
+
+================================================================================
+FILE: backend\mno-integration\tests\test_mtn.py
+================================================================================
+
+import unittest
+from adapters.mtn import MTNAdapter
+from adapters.fallback import SFTPFallbackManager
+import os
+
+class TestMTNAdapter(unittest.TestCase):
+    
+    def setUp(self):
+        self.adapter = MTNAdapter("http://mock-mtn.local")
+        # Ensure clean state for fallback
+        if os.path.exists(self.adapter.fallback_manager.current_file):
+            os.remove(self.adapter.fallback_manager.current_file)
+
+    def test_circuit_breaker_and_fallback(self):
+        # We designed the mock class to inherently fail with a ConnectionError
+        # This should trigger Tenacity 3x, then fall down to our except block and trigger the SFTP fallback
+        
+        result = self.adapter.deduct_balance("123456789012345", 50.0)
+        
+        # Validate that it hit the fallback
+        self.assertEqual(result["status"], "QUEUED_SFTP")
+        self.assertEqual(result["source"], "SFTP_FALLBACK")
+        
+        # Validate that a file was written to disk
+        self.assertTrue(os.path.exists(self.adapter.fallback_manager.current_file))
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\engine\poller.go
+================================================================================
+
+package engine
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+type MNO string
+
+const (
+	MTN     MNO = "MTN"
+	GLO     MNO = "GLO"
+	AIRTEL  MNO = "AIRTEL"
+	NMOBILE MNO = "9MOBILE"
+)
+
+var RegisteredMNOs = []MNO{MTN, GLO, AIRTEL, NMOBILE}
+
+type PollResult struct {
+	Network MNO
+	Signal  float64
+	Speed   float64
+	Latency float64
+	Cost    float64
+	Error   error
+}
+
+// LockManager defines the interface for distributed concurrency locks (e.g., Redis)
+type LockManager interface {
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	ReleaseLock(ctx context.Context, key string) error
+}
+
+type Engine struct {
+	lockManager LockManager
+}
+
+func NewEngine(lm LockManager) *Engine {
+	return &Engine{lockManager: lm}
+}
+
+// StartPolling initiates the 10-second polling loop
+func (e *Engine) StartPolling(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.pollAllNetworks(ctx)
+		}
+	}
+}
+
+// pollAllNetworks executes a single polling cycle across all MNOs simultaneously
+func (e *Engine) pollAllNetworks(ctx context.Context) {
+	// Attempt to acquire Redis-based distributed lock to prevent double-polling across pods
+	locked, err := e.lockManager.AcquireLock(ctx, "nie:polling_lock", 8*time.Second)
+	if err != nil || !locked {
+		// Another instance is polling, skip this cycle
+		return
+	}
+	defer e.lockManager.ReleaseLock(ctx, "nie:polling_lock")
+
+	var wg sync.WaitGroup
+	// Buffered channel to prevent goroutine leaks if processor is slow
+	results := make(chan PollResult, len(RegisteredMNOs))
+
+	for _, mno := range RegisteredMNOs {
+		wg.Add(1)
+		go func(network MNO) {
+			defer wg.Done()
+			res := e.pollSingleNetwork(ctx, network)
+			results <- res
+		}(mno)
+	}
+
+	// Wait for all goroutines to finish
+	wg.Wait()
+	close(results)
+
+	// Process all results concurrently collected
+	for res := range results {
+		if res.Error != nil {
+			fmt.Printf("Error polling %s: %v\n", res.Network, res.Error)
+			continue
+		}
+		// In a real scenario, this calculates QualityScore and writes to Redis
+		fmt.Printf("Polled %s: Signal=%.2f, Speed=%.2f, Latency=%.2f\n", res.Network, res.Signal, res.Speed, res.Latency)
+	}
+}
+
+// pollSingleNetwork simulates polling an MNO's adapter
+func (e *Engine) pollSingleNetwork(ctx context.Context, mno MNO) PollResult {
+	// Simulated API call duration
+	time.Sleep(200 * time.Millisecond)
+
+	return PollResult{
+		Network: mno,
+		Signal:  0.8,
+		Speed:   0.9,
+		Latency: 50.0,
+		Cost:    0.5,
+		Error:   nil,
+	}
+}
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\engine\state_machine.go
+================================================================================
+
+package engine
+
+import (
+	"time"
+)
+
+type NetworkState string
+
+const (
+	StateMonitoring NetworkState = "MONITORING"
+	StateObserving  NetworkState = "OBSERVING"
+	StateSwitching  NetworkState = "SWITCHING"
+	StateIdle       NetworkState = "IDLE"
+)
+
+type ObservationBand struct {
+	MinGap   float64
+	MaxGap   float64
+	Duration time.Duration
+}
+
+var ObservationBands = []ObservationBand{
+	{0, 5, 0},                           // Ignore gap 0-5
+	{6, 14, 30 * time.Second},           // Passive 30s check
+	{15, 29, 60 * time.Second},          // Watch 60s
+	{30, 49, 30 * time.Second},          // Watch 30s
+	{50, 100, 10 * time.Second},         // Rapid 10s
+}
+
+type SwitchDecision struct {
+	ShouldObserve  bool
+	ShouldSwitch   bool
+	WaitDuration   time.Duration
+	Reason         string
+}
+
+// EvaluateSwitchCondition evaluates the gap between active and candidate networks and returns the observation decision
+func EvaluateSwitchCondition(activeScore, candidateScore, activeRSRP float64, isCallActive bool, timeSinceLastSwitch, timeSinceLastCommand time.Duration) SwitchDecision {
+	// 1. Emergency override (active network collapses) - ignore anti-flap and call protection
+	if activeRSRP <= -110.0 {
+		return SwitchDecision{ShouldObserve: false, ShouldSwitch: true, WaitDuration: 0, Reason: "Emergency (RSRP <= -110dBm)"}
+	}
+
+	// 2. Anti-flap hysteresis checks
+	if timeSinceLastSwitch < 30*time.Second {
+		return SwitchDecision{Reason: "Anti-flap: 30s hysteresis after switch"}
+	}
+	if timeSinceLastCommand < 90*time.Second {
+		return SwitchDecision{Reason: "Anti-flap: 90s minimum between commands"}
+	}
+
+	// 3. Gap calculation
+	gap := candidateScore - activeScore
+
+	// 4. Call protection penalty
+	if isCallActive {
+		gap -= 30.0
+	}
+
+	// 5. Gap Evaluation
+	if gap < 6.0 {
+		return SwitchDecision{Reason: "Score gap too low (ignore band or penalized)"}
+	}
+
+	// Fallback cap if gap somehow exceeds 100
+	if gap > 100.0 {
+		gap = 100.0
+	}
+
+	var duration time.Duration
+	for _, band := range ObservationBands {
+		if gap >= band.MinGap && gap <= band.MaxGap {
+			duration = band.Duration
+			break
+		}
+	}
+
+	return SwitchDecision{
+		ShouldObserve: true,
+		WaitDuration:  duration,
+		Reason:        "Observation window triggered",
+	}
+}
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\engine\state_machine_test.go
+================================================================================
+
+package engine
+
+import (
+	"testing"
+	"time"
+)
+
+func TestEvaluateSwitchCondition_Emergency(t *testing.T) {
+	decision := EvaluateSwitchCondition(80, 50, -111.0, true, 5*time.Second, 10*time.Second)
+	if !decision.ShouldSwitch || decision.WaitDuration != 0 {
+		t.Errorf("Expected immediate switch for emergency, got %+v", decision)
+	}
+}
+
+func TestEvaluateSwitchCondition_AntiFlap(t *testing.T) {
+	// Too soon since last switch
+	dec1 := EvaluateSwitchCondition(50, 90, -80.0, false, 20*time.Second, 100*time.Second)
+	if dec1.ShouldObserve || dec1.ShouldSwitch {
+		t.Errorf("Expected anti-flap rejection for timeSinceLastSwitch < 30s, got %+v", dec1)
+	}
+
+	// Too soon since last command
+	dec2 := EvaluateSwitchCondition(50, 90, -80.0, false, 40*time.Second, 80*time.Second)
+	if dec2.ShouldObserve || dec2.ShouldSwitch {
+		t.Errorf("Expected anti-flap rejection for timeSinceLastCommand < 90s, got %+v", dec2)
+	}
+}
+
+func TestEvaluateSwitchCondition_CallProtection(t *testing.T) {
+	// Candidate score is 90, Active is 50. Gap = 40. With call active, gap = 10.
+	// Band 6-14 requires 30s wait.
+	dec := EvaluateSwitchCondition(50, 90, -80.0, true, 100*time.Second, 100*time.Second)
+	if !dec.ShouldObserve || dec.WaitDuration != 30*time.Second {
+		t.Errorf("Expected 30s wait (gap 10 after penalty). Got %+v", dec)
+	}
+
+	// Gap = 30. With call, gap = 0. Should be ignored.
+	dec2 := EvaluateSwitchCondition(50, 80, -80.0, true, 100*time.Second, 100*time.Second)
+	if dec2.ShouldObserve {
+		t.Errorf("Expected ignore due to call protection penalty, got %+v", dec2)
+	}
+}
+
+func TestEvaluateSwitchCondition_Bands(t *testing.T) {
+	tests := []struct {
+		gap      float64
+		expected time.Duration
+	}{
+		{4, 0},                           // Ignore
+		{10, 30 * time.Second},           // 6-14 pass 30s
+		{20, 60 * time.Second},           // 15-29 watch 60s
+		{40, 30 * time.Second},           // 30-49 watch 30s
+		{80, 10 * time.Second},           // 50+ rapid 10s
+	}
+
+	for _, tc := range tests {
+		dec := EvaluateSwitchCondition(50, 50+tc.gap, -80.0, false, 100*time.Second, 100*time.Second)
+		if tc.gap < 6 && dec.ShouldObserve {
+			t.Errorf("Gap %.1f expected to be ignored", tc.gap)
+		} else if tc.gap >= 6 && dec.WaitDuration != tc.expected {
+			t.Errorf("Gap %.1f expected wait %v, got %v", tc.gap, tc.expected, dec.WaitDuration)
+		}
+	}
+}
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\grpc\switch_client.go
+================================================================================
+
+package grpc
+
+import (
+	"context"
+	"fmt"
+)
+
+// SwitchCommand represents the payload sent to the SIM Service
+type SwitchCommand struct {
+	SessionID     string
+	TargetIMSI    string
+	TargetCarrier string
+	Reason        string
+}
+
+// SIMServiceClient defines the contract for communicating with the SIM/eSIM Service
+type SIMServiceClient interface {
+	ExecuteSwitch(ctx context.Context, cmd SwitchCommand) error
+}
+
+// MockSIMClient provides a mock implementation for development without the SIM service
+// In production, this will use grpc.Dial and the generated protobuf stubs.
+type MockSIMClient struct{}
+
+// ExecuteSwitch simulates an RPC call to the SIM service to execute a physical or eSIM swap
+func (m *MockSIMClient) ExecuteSwitch(ctx context.Context, cmd SwitchCommand) error {
+	fmt.Printf("[gRPC] Sending SwitchCommand to SIM Service:\n")
+	fmt.Printf("       -> Target IMISI: %s, Carrier: %s, Reason: %s\n", cmd.TargetIMSI, cmd.TargetCarrier, cmd.Reason)
+	// A real implementation would convert `cmd` to the protobuf equivalent and call the service
+	return nil
+}
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\kafka\publisher.go
+================================================================================
+
+package kafka
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// SwitchEvent represents the schema for the `network.switch.events` topic
+type SwitchEvent struct {
+	SwitchID          string    `json:"switch_id"`
+	UserID            string    `json:"user_id"`
+	FromCarrier       string    `json:"from_carrier"`
+	ToCarrier         string    `json:"to_carrier"`
+	Reason            string    `json:"reason"`
+	QualityScoresJSON string    `json:"quality_scores_json"` // Captures all 4 MNO scores at time of switch
+	SIMType           string    `json:"sim_type"`            // "physical" or "eSIM"
+	Timestamp         time.Time `json:"timestamp"`
+}
+
+// EventPublisher defines the contract for publishing events to the message broker
+type EventPublisher interface {
+	PublishSwitchEvent(ctx context.Context, event SwitchEvent) error
+}
+
+// MockKafkaPublisher provides a mock implementation for development
+// In production, this uses Confluent Kafka Go with acks=all and Avro schemas
+type MockKafkaPublisher struct{}
+
+// PublishSwitchEvent broadcasts the switch decision to downstream consumers (Analytics, Audit)
+func (p *MockKafkaPublisher) PublishSwitchEvent(ctx context.Context, event SwitchEvent) error {
+	bytes, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	
+	fmt.Printf("[Kafka] Publishing to topic `network.switch.events`: %s\n", string(bytes))
+	return nil
+}
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\scoring\calculator.go
+================================================================================
+
+package scoring
+
+// Weights represents the configurable weights for scoring
+type Weights struct {
+	SignalWeight  float64
+	SpeedWeight   float64
+	LatencyWeight float64
+	CostWeight    float64
+}
+
+// CalculateStabilityFactor determines the stability multiplier based on variance
+// Stability factor: variance ≤5 → 1.00, ≤15 → 0.85, ≤25 → 0.70, default → 0.50
+func CalculateStabilityFactor(variance float64) float64 {
+	if variance <= 5.0 {
+		return 1.00
+	} else if variance <= 15.0 {
+		return 0.85
+	} else if variance <= 25.0 {
+		return 0.70
+	}
+	return 0.50
+}
+
+// CalculateQualityScore computes the final score for a network
+// FINAL SCORE = (Signal × Speed) / (Latency × Cost) × Stability Factor
+// Inputs normalized 0–1. 
+func CalculateQualityScore(signal, speed, latency, cost float64, stabilityFactor float64, weights Weights) float64 {
+	// Apply weights
+	wSignal := signal * weights.SignalWeight
+	wSpeed := speed * weights.SpeedWeight
+	wLatency := latency * weights.LatencyWeight
+	wCost := cost * weights.CostWeight
+
+	// Avoid division by zero
+	den := wLatency * wCost
+	if den == 0 {
+		den = 0.001
+	}
+
+	num := wSignal * wSpeed
+	score := (num / den) * stabilityFactor
+
+	// Cap score at 100 and floor at 0
+	if score > 100 {
+		return 100
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+
+
+================================================================================
+FILE: backend\nie-engine\internal\scoring\calculator_test.go
+================================================================================
+
+package scoring
+
+import (
+	"testing"
+)
+
+func TestCalculateStabilityFactor(t *testing.T) {
+	tests := []struct {
+		name     string
+		variance float64
+		expected float64
+	}{
+		{"Low variance", 3.0, 1.00},
+		{"Boundary 5", 5.0, 1.00},
+		{"Medium variance", 10.0, 0.85},
+		{"Boundary 15", 15.0, 0.85},
+		{"High variance", 20.0, 0.70},
+		{"Boundary 25", 25.0, 0.70},
+		{"Extreme variance", 30.0, 0.50},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := CalculateStabilityFactor(tc.variance)
+			if actual != tc.expected {
+				t.Errorf("Expected %.2f, got %.2f", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestCalculateQualityScore(t *testing.T) {
+	w := Weights{
+		SignalWeight:  1.0,
+		SpeedWeight:   1.0,
+		LatencyWeight: 1.0,
+		CostWeight:    1.0,
+	}
+
+	// Normal scenario
+	score := CalculateQualityScore(0.8, 0.9, 0.2, 0.5, 1.00, w)
+	if score <= 0 || score > 100 {
+		t.Errorf("Score out of bounds: %f", score)
+	}
+
+	// Division by zero safety
+	wZero := Weights{1.0, 1.0, 0.0, 1.0}
+	scoreZ := CalculateQualityScore(0.8, 0.9, 0.0, 0.5, 1.00, wZero)
+	if scoreZ != 100 {
+		t.Errorf("Expected cap at 100 for zero denominator, got %f", scoreZ)
+	}
+}
+
+
+
+================================================================================
+FILE: backend\relay-proxy\internal\buffer\session_buffer.go
+================================================================================
+
+package buffer
+
+import (
+	"errors"
+	"sync"
+	"time"
+)
+
+// Constants defined by the LLD for packet buffering
+const (
+	AudioBufferMaxBytes = 40 * 1024       // 40 KB (approx 800ms of Opus audio)
+	VideoBufferMaxBytes = 10 * 1024 * 1024 // 10 MB (approx 500ms of HD video)
+	BufferMaxHoldTime   = 8 * time.Second  // Max time to hold packets before degrading/dropping
+)
+
+var (
+	ErrBufferFull = errors.New("buffer capacity exceeded")
+	ErrBufferTimeout = errors.New("packet hold time exceeded max limit")
+)
+
+type Packet struct {
+	Data      []byte
+	Timestamp time.Time
+	IsVideo   bool
+}
+
+// SessionBuffer manages the in-memory ring buffers per active QUIC session
+type SessionBuffer struct {
+	mu           sync.Mutex
+	audioPackets []Packet
+	audioBytes   int
+	videoPackets []Packet
+	videoBytes   int
+}
+
+func NewSessionBuffer() *SessionBuffer {
+	return &SessionBuffer{
+		audioPackets: make([]Packet, 0, 100),
+		videoPackets: make([]Packet, 0, 100),
+	}
+}
+
+// Enqueue adds a packet to the buffer, dropping old packets if limits are exceeded
+func (sb *SessionBuffer) Enqueue(p Packet) error {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	size := len(p.Data)
+
+	if p.IsVideo {
+		if sb.videoBytes+size > VideoBufferMaxBytes {
+			// Phase 1 strategy: at limits, drop oldest to accommodate new
+			// For >8s delays, LLD specifies graceful degrade to audio-only.
+			return ErrBufferFull 
+		}
+		sb.videoPackets = append(sb.videoPackets, p)
+		sb.videoBytes += size
+	} else {
+		if sb.audioBytes+size > AudioBufferMaxBytes {
+			return ErrBufferFull
+		}
+		sb.audioPackets = append(sb.audioPackets, p)
+		sb.audioBytes += size
+	}
+	return nil
+}
+
+// Drain clears and returns all held packets. To be called on QUIC reconnect.
+func (sb *SessionBuffer) Drain() []Packet {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	total := len(sb.audioPackets) + len(sb.videoPackets)
+	result := make([]Packet, 0, total)
+
+	// In real implementation, packets should be sorted by sequence/timestamp.
+	// We append audio first as it's higher priority for continuity.
+	result = append(result, sb.audioPackets...)
+	result = append(result, sb.videoPackets...)
+
+	// Reset buffers
+	sb.audioPackets = sb.audioPackets[:0]
+	sb.audioBytes = 0
+	sb.videoPackets = sb.videoPackets[:0]
+	sb.videoBytes = 0
+
+	return result
+}
+
+
+
+================================================================================
+FILE: backend\relay-proxy\internal\buffer\session_buffer_test.go
+================================================================================
+
+package buffer
+
+import (
+	"testing"
+	"time"
+)
+
+func TestSessionBuffer_AudioEnqueue(t *testing.T) {
+	sb := NewSessionBuffer()
+
+	// Fill buffer right up to 40KB
+	chunk := make([]byte, 1024) // 1KB
+	for i := 0; i < 40; i++ {
+		err := sb.Enqueue(Packet{Data: chunk, Timestamp: time.Now(), IsVideo: false})
+		if err != nil {
+			t.Fatalf("Failed to enqueue chunk %d: %v", i, err)
+		}
+	}
+
+	// 41st chunk should fail
+	err := sb.Enqueue(Packet{Data: chunk, Timestamp: time.Now(), IsVideo: false})
+	if err != ErrBufferFull {
+		t.Errorf("Expected ErrBufferFull, got %v", err)
+	}
+}
+
+func TestSessionBuffer_Drain(t *testing.T) {
+	sb := NewSessionBuffer()
+
+	sb.Enqueue(Packet{Data: []byte("audio1"), IsVideo: false})
+	sb.Enqueue(Packet{Data: []byte("video1"), IsVideo: true})
+
+	drained := sb.Drain()
+	if len(drained) != 2 {
+		t.Fatalf("Expected 2 packets, got %d", len(drained))
+	}
+
+	if sb.audioBytes != 0 || sb.videoBytes != 0 {
+		t.Errorf("Buffers not cleared after drain")
+	}
+}
+
+
+
+================================================================================
+FILE: backend\relay-proxy\internal\server\quic_server.go
+================================================================================
+
+package server
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"github.com/quic-go/quic-go"
+	"log"
+)
+
+// RelayServer defines the QUIC server structure
+type RelayServer struct {
+	addr      string
+	tlsConfig *tls.Config
+}
+
+// NewRelayServer creates a new instance of the relay proxy QUIC server
+func NewRelayServer(addr string, tlsConfig *tls.Config) *RelayServer {
+	return &RelayServer{
+		addr:      addr,
+		tlsConfig: tlsConfig,
+	}
+}
+
+// Start listens for incoming QUIC connections and handles them
+func (s *RelayServer) Start(ctx context.Context) error {
+	listener, err := quic.ListenAddr(s.addr, s.tlsConfig, &quic.Config{
+		EnableDatagrams: true, // Required for fast lossy packet handling (audio/video)
+		KeepAlivePeriod: 5 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start QUIC listener: %w", err)
+	}
+
+	log.Printf("[Relay] QUIC Server listening on %s (TLS 1.3)", s.addr)
+
+	for {
+		conn, err := listener.Accept(ctx)
+		if err != nil {
+			log.Printf("[Relay] Failed to accept connection: %v", err)
+			continue
+		}
+
+		go s.handleConnection(ctx, conn)
+	}
+}
+
+func (s *RelayServer) handleConnection(ctx context.Context, conn quic.Connection) {
+	log.Printf("[Relay] Accepted connection from %s", conn.RemoteAddr())
+	// In QUIC, connections are identified by Connection IDs, so IP changes are handled transparently
+	// Phase 1 MVP: Using Cloudflare WARP handles the heavy lifting of maintaining tunnels,
+	// but this structure will manage our eventual self-hosted termination.
+}
+
+
+
+================================================================================
+FILE: backend\relay-proxy\internal\store\session_store.go
+================================================================================
+
+package store
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+)
+
+// SessionState represents the state of a device tunnel
+type SessionState struct {
+	DeviceID      string `json:"device_id"`
+	ConnectionID  string `json:"connection_id"`
+	ActivePoP     string `json:"active_pop"`
+	LastKeepalive int64  `json:"last_keepalive"`
+}
+
+// SessionStore defines the contract for Redis session management
+type SessionStore interface {
+	SaveSession(ctx context.Context, session SessionState, ttl time.Duration) error
+	GetSession(ctx context.Context, deviceID string) (*SessionState, error)
+	DeleteSession(ctx context.Context, deviceID string) error
+}
+
+// RedisSessionStore implements SessionStore using go-redis
+type RedisSessionStore struct {
+	client *redis.Client
+}
+
+func NewRedisSessionStore(client *redis.Client) *RedisSessionStore {
+	return &RedisSessionStore{
+		client: client,
+	}
+}
+
+func getSessionKey(deviceID string) string {
+	return fmt.Sprintf("relay:session:%s", deviceID)
+}
+
+// SaveSession persists the tunnel state. This enables cross-PoP failover if one server goes down.
+func (s *RedisSessionStore) SaveSession(ctx context.Context, session SessionState, ttl time.Duration) error {
+	key := getSessionKey(session.DeviceID)
+	// Storing as a simple hash for quick retrieval of specific fields if needed
+	fields := map[string]interface{}{
+		"connection_id":  session.ConnectionID,
+		"active_pop":     session.ActivePoP,
+		"last_keepalive": session.LastKeepalive,
+	}
+	
+	// Use pipeline for atomicity
+	pipe := s.client.Pipeline()
+	pipe.HSet(ctx, key, fields)
+	pipe.Expire(ctx, key, ttl)
+	
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to save session to redis: %w", err)
+	}
+	return nil
+}
+
+// GetSession retrieves the tunnel state when a device reconnects to a new PoP
+func (s *RedisSessionStore) GetSession(ctx context.Context, deviceID string) (*SessionState, error) {
+	key := getSessionKey(deviceID)
+	
+	vals, err := s.client.HGetAll(ctx, key).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+	
+	if len(vals) == 0 {
+		return nil, redis.Nil // Session not found
+	}
+
+	var keepalive int64
+	fmt.Sscanf(vals["last_keepalive"], "%d", &keepalive)
+
+	return &SessionState{
+		DeviceID:      deviceID,
+		ConnectionID:  vals["connection_id"],
+		ActivePoP:     vals["active_pop"],
+		LastKeepalive: keepalive,
+	}, nil
+}
+
+// DeleteSession cleans up the state when a tunnel is gracefully closed
+func (s *RedisSessionStore) DeleteSession(ctx context.Context, deviceID string) error {
+	return s.client.Del(ctx, getSessionKey(deviceID)).Err()
+}
+
+
+
+================================================================================
+FILE: backend\relay-proxy\internal\store\session_store_test.go
+================================================================================
+
+package store
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+)
+
+// TestMockedSessionStore provides basic coverage. 
+// A full test would use miniredis or testcontainers.
+func TestSessionStore_SaveAndGet(t *testing.T) {
+	// Skip actual redis connection in unit test without mock/miniredis
+	t.Skip("Requires active Redis or miniredis mock")
+	
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer client.Close()
+	
+	store := NewRedisSessionStore(client)
+	
+	session := SessionState{
+		DeviceID:      "device-123",
+		ConnectionID:  "conn-abc",
+		ActivePoP:     "Lagos-1",
+		LastKeepalive: time.Now().Unix(),
+	}
+	
+	err := store.SaveSession(ctx, session, 1*time.Minute)
+	if err != nil {
+		t.Fatalf("Failed to save session: %v", err)
+	}
+	
+	retrieved, err := store.GetSession(ctx, "device-123")
+	if err != nil {
+		t.Fatalf("Failed to retrieve session: %v", err)
+	}
+	
+	if retrieved.ConnectionID != session.ConnectionID {
+		t.Errorf("Expected connection %s, got %s", session.ConnectionID, retrieved.ConnectionID)
+	}
+}
+
+
+
+================================================================================
+FILE: backend\sim-service\src\main\java\com\smoothswitch\sim\SimServiceApplication.java
+================================================================================
+
+package com.smoothswitch.sim;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class SimServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(SimServiceApplication.class, args);
+    }
+}
+
+
+
+================================================================================
+FILE: backend\sim-service\src\main\java\com\smoothswitch\sim\grpc\SwitchServiceGrpcImpl.java
+================================================================================
+
+package com.smoothswitch.sim.grpc;
+
+import com.smoothswitch.sim.service.EsimProvisioningService;
+import com.smoothswitch.sim.service.PhysicalSimHandler;
+import io.grpc.stub.StreamObserver;
+import net.devh.boot.grpc.server.service.GrpcService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import java.util.concurrent.CompletableFuture;
+
+@GrpcService
+public class SwitchServiceGrpcImpl extends SwitchServiceGrpc.SwitchServiceImplBase {
+
+    private static final Logger log = LoggerFactory.getLogger(SwitchServiceGrpcImpl.class);
+
+    private final PhysicalSimHandler physicalSimHandler;
+    private final EsimProvisioningService esimProvisioningService;
+
+    @Autowired
+    public SwitchServiceGrpcImpl(PhysicalSimHandler physicalSimHandler,
+            EsimProvisioningService esimProvisioningService) {
+        this.physicalSimHandler = physicalSimHandler;
+        this.esimProvisioningService = esimProvisioningService;
+    }
+
+    @Override
+    public void executeSwitch(SwitchCommand request, StreamObserver<SwitchResult> responseObserver) {
+        log.info("Received SwitchCommand for SessionID: {} -> Route: {}", request.getSessionId(), request.getSimType());
+
+        CompletableFuture<SwitchResult> futureResult;
+
+        if ("esim".equalsIgnoreCase(request.getSimType())) {
+            futureResult = esimProvisioningService.executeEsimSwitch(request);
+        } else {
+            // Default to physical
+            futureResult = physicalSimHandler.executePhysicalSwitch(request);
+        }
+
+        futureResult.whenComplete((result, ex) -> {
+            if (ex != null) {
+                log.error("Switch Execution Pipeline Failed", ex);
+                responseObserver.onError(ex);
+            } else {
+                responseObserver.onNext(result);
+                responseObserver.onCompleted();
+            }
+        });
+    }
+}
+
+
+
+================================================================================
+FILE: backend\sim-service\src\main\java\com\smoothswitch\sim\service\EsimProvisioningService.java
+================================================================================
+
+package com.smoothswitch.sim.service;
+
+import com.smoothswitch.sim.grpc.SwitchCommand;
+import com.smoothswitch.sim.grpc.SwitchResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+@Service
+public class EsimProvisioningService {
+    private static final Logger log = LoggerFactory.getLogger(EsimProvisioningService.class);
+    private static final long RSP_TIMEOUT_MS = 10000; // 10s RSP timeout per LLD
+
+    /**
+     * Executes the software-based eSIM profile switch via GSMA SGP.22 SM-DP+
+     */
+    public CompletableFuture<SwitchResult> executeEsimSwitch(SwitchCommand command) {
+        return CompletableFuture.supplyAsync(() -> {
+            log.info("[eSIM] Initiating switch to carrier {} via SM-DP+", command.getTargetCarrier());
+            long startTime = System.currentTimeMillis();
+
+            try {
+                // Call MNO SM-DP+ enableProfile(iccid) via REST
+                boolean success = invokeSmDpProvisioningAPI(command.getTargetImsi());
+
+                if (!success) {
+                    throw new RuntimeException("SM-DP+ returned failure status");
+                }
+
+                long duration = System.currentTimeMillis() - startTime;
+                log.info("[eSIM] Switch complete in {} ms", duration);
+
+                return SwitchResult.newBuilder()
+                        .setSuccess(true)
+                        .setDurationMs((int) duration)
+                        .build();
+
+            } catch (Exception e) {
+                log.error("[eSIM] Switch failed: {}", e.getMessage());
+                handleRollback(command);
+
+                return SwitchResult.newBuilder()
+                        .setSuccess(false)
+                        .setErrorMessage(e.getMessage())
+                        .build();
+            }
+        }).orTimeout(RSP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> {
+                    log.error("[eSIM] Switch timed out after 10s, triggering rollback.");
+                    handleRollback(command);
+
+                    return SwitchResult.newBuilder()
+                            .setSuccess(false)
+                            .setErrorMessage("RSP Timeout: " + ex.getMessage())
+                            .build();
+                });
+    }
+
+    private boolean invokeSmDpProvisioningAPI(String imsi) throws Exception {
+        // Simulated network delay (1.5-3s normally)
+        Thread.sleep(2000);
+        return true;
+    }
+
+    private void handleRollback(SwitchCommand command) {
+        log.warn("[Rollback] Reverting default profile to previous carrier configuration...");
+        // Logic: disableProfile(new) + enableProfile(old)
+        // Publish SIM_SWITCH_FAILED to Kafka sim.events
+    }
+}
+
+
+
+================================================================================
+FILE: backend\sim-service\src\main\java\com\smoothswitch\sim\service\PhysicalSimHandler.java
+================================================================================
+
+package com.smoothswitch.sim.service;
+
+import com.smoothswitch.sim.grpc.SwitchCommand;
+import com.smoothswitch.sim.grpc.SwitchResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.util.concurrent.CompletableFuture;
+
+@Service
+public class PhysicalSimHandler {
+    private static final Logger log = LoggerFactory.getLogger(PhysicalSimHandler.class);
+
+    /**
+     * Executes the switch on a physical dual-SIM Android or iOS device.
+     * Takes roughly 3-8 seconds for baseband power cycle.
+     */
+    public CompletableFuture<SwitchResult> executePhysicalSwitch(SwitchCommand command) {
+        return CompletableFuture.supplyAsync(() -> {
+            log.info("[Physical SIM] Initiating switch to carrier {} for IMSI {}",
+                    command.getTargetCarrier(), command.getTargetImsi());
+
+            long startTime = System.currentTimeMillis();
+
+            try {
+                // Simulated Android Telephony Manager / iOS CTCellularPlanProvisioning
+                // power cycle delay
+                Thread.sleep(5000);
+
+                log.info("[Physical SIM] Switch complete for IMSI {}", command.getTargetImsi());
+
+                long duration = System.currentTimeMillis() - startTime;
+                return SwitchResult.newBuilder()
+                        .setSuccess(true)
+                        .setDurationMs((int) duration)
+                        .build();
+
+            } catch (InterruptedException e) {
+                log.error("[Physical SIM] Switch interrupted", e);
+                Thread.currentThread().interrupt();
+                return SwitchResult.newBuilder()
+                        .setSuccess(false)
+                        .setErrorMessage("Switch interrupted: " + e.getMessage())
+                        .build();
+            }
+        });
+    }
+}
+
+
+
+================================================================================
+FILE: backend\sim-service\src\main\proto\switch.proto
+================================================================================
+
+syntax = "proto3";
+
+package com.smoothswitch.sim.grpc;
+
+option java_multiple_files = true;
+option java_package = "com.smoothswitch.sim.grpc";
+option java_outer_classname = "SwitchProto";
+
+// Defines the interface exposed by the SIM Service to the NIE Engine
+service SwitchService {
+    // Executes a network switch command
+    rpc ExecuteSwitch (SwitchCommand) returns (SwitchResult) {}
+}
+
+message SwitchCommand {
+    string session_id = 1;
+    string target_imsi = 2;
+    string target_carrier = 3;
+    string reason = 4;
+    string sim_type = 5; // "physical" or "esim"
+}
+
+message SwitchResult {
+    bool success = 1;
+    string error_message = 2;
+    int32 duration_ms = 3;
+}
+
+
+
+================================================================================
+FILE: monitoring\alertmanager.yml
+================================================================================
+
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: datadog-webhook
+
+receivers:
+  - name: datadog-webhook
+    webhook_configs:
+      - url: 'https://api.datadoghq.eu/api/v1/integration/prometheus?api_key=57d0cde73ed0a49ee0fa3994f19723da'
+        send_resolved: true
+
+
+================================================================================
+FILE: monitoring\prometheus.yml
+================================================================================
+
+# =============================================================================
+# Prometheus Scrape Configuration – SmoothSwitch
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert-rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # ──────────── Prometheus self-monitoring ────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ──────────── Auth Service (Kosi – Track A) ────────────
+  - job_name: "auth-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["auth-service:8081"]
+        labels:
+          service: "auth-service"
+          team: "track-a"
+
+  # ──────────── Wallet Service (Kosi – Track A) ────────────
+  - job_name: "wallet-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["wallet-service:8082"]
+        labels:
+          service: "wallet-service"
+          team: "track-a"
+
+  # ──────────── NIE Engine (Go) ────────────
+  - job_name: "nie-engine"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["nie-engine:8083"]
+        labels:
+          service: "nie-engine"
+          team: "track-b"
+
+  # ──────────── Relay Proxy (Go / QUIC) ────────────
+  - job_name: "relay-proxy"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["relay-proxy:8084"]
+        labels:
+          service: "relay-proxy"
+          team: "track-b"
+
+  # ──────────── MNO Integration (Python / FastAPI) ────────────
+  - job_name: "mno-integration"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["mno-integration:8085"]
+        labels:
+          service: "mno-integration"
+          team: "track-a"
+
+
+================================================================================
+FILE: docker-compose.yml
+================================================================================
+
+###############################################################################
+# SmoothSwitch – Monitoring & Observability Stack
+# Deliverables: D1 (Prometheus + Grafana), D3 (Jaeger)
+###############################################################################
+
+services:
+  # ─────────────────────────── Prometheus ───────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: smoothswitch-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Alertmanager ─────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: smoothswitch-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Grafana ─────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: smoothswitch-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=smoothswitch2026
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Jaeger (D3) ─────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: smoothswitch-jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - monitoring
+
+  # ─────────────────────────── Datadog Agent ───────────────────────
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    container_name: smoothswitch-datadog-agent
+    restart: unless-stopped
+    environment:
+      - DD_API_KEY=57d0cde73ed0a49ee0fa3994f19723da
+      - DD_SITE=datadoghq.eu
+      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
+      - DD_APM_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+    ports:
+      - "8125:8125/udp" # StatsD
+      - "8126:8126/tcp" # APM Traces
+    networks:
+      - monitoring
+
+# ─────────────────────────── Volumes ───────────────────────────────
+volumes:
+  prometheus_data:
+  grafana_data:
+
+# ─────────────────────────── Networks ──────────────────────────────
+networks:
+  monitoring:
+    driver: bridge
+
+
