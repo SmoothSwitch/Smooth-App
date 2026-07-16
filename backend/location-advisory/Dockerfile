@@ -9,8 +9,8 @@ WORKDIR /app
 COPY . .
 RUN go mod tidy
 
-# Build the binary with CGO enabled
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /location-advisory .
+# Build the binary with CGO enabled and musl tags for Kafka
+RUN CGO_ENABLED=1 GOOS=linux go build -tags musl -ldflags="-s -w" -o /location-advisory .
 
 # ── Run stage ───────────────────────────────────────────────────
 FROM alpine:3.19

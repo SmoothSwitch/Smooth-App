@@ -11,10 +11,10 @@ ENV PATH="$PATH:/go/bin"
 WORKDIR /app
 
 COPY . .
-RUN go mod tidy
 RUN protoc --go_out=. --go_opt=paths=source_relative \
     --go-grpc_out=. --go-grpc_opt=paths=source_relative \
     proto/switch.proto
+RUN go mod tidy
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /sim-service .
