@@ -1,11 +1,10 @@
 # ── Build stage ─────────────────────────────────────────────────
-FROM golang:1.21-alpine AS builder
+FROM golang:alpine AS builder
 
 RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Initialize/tidy Go modules
 COPY . .
 RUN go mod tidy
 

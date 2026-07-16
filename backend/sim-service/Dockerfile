@@ -1,5 +1,5 @@
 # ── Build stage ─────────────────────────────────────────────────
-FROM golang:1.21-alpine AS builder
+FROM golang:alpine AS builder
 
 RUN apk add --no-cache git protobuf protobuf-dev
 RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.33.0
@@ -10,10 +10,7 @@ ENV PATH="$PATH:/go/bin"
 
 WORKDIR /app
 
-# Copy the whole directory. Since we don't have a valid go.sum yet, we can tidy here.
 COPY . .
-
-# Initialize/tidy Go modules and generate proto files
 RUN go mod tidy
 RUN protoc --go_out=. --go_opt=paths=source_relative \
     --go-grpc_out=. --go-grpc_opt=paths=source_relative \

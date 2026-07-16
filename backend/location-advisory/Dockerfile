@@ -1,12 +1,11 @@
 # ── Build stage ─────────────────────────────────────────────────
-FROM golang:1.21-alpine AS builder
+FROM golang:alpine AS builder
 
 # Install build dependencies for CGO (required by h3-go and confluent-kafka-go)
 RUN apk add --no-cache git build-base musl-dev gcc
 
 WORKDIR /app
 
-# Initialize/tidy Go modules
 COPY . .
 RUN go mod tidy
 
