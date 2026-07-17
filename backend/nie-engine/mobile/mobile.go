@@ -370,3 +370,23 @@ func HealthCheck() string {
 	b, _ := json.Marshal(h)
 	return string(b)
 }
+
+// ExecuteMobileSwitch triggers a manual network switch from the UI.
+func ExecuteMobileSwitch(simType string, iccid string) string {
+	engine.mu.Lock()
+	engine.activeCarrier = simType
+	engine.mu.Unlock()
+
+	type response struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+
+	resp := response{
+		Status:  "success",
+		Message: fmt.Sprintf("Switched to %s (ICCID: %s)", simType, iccid),
+	}
+
+	b, _ := json.Marshal(resp)
+	return string(b)
+}
